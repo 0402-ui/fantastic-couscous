@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>水墨太极交互 - 网页版</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* 宣纸底色 */
+            background-color: #e9e6d8;
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .text-layer {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            pointer-events: none;
+            user-select: none;
+            text-align: center;
+        }
+
+        #hint-text {
+            top: 85%;
+            color: #555;
+            font-size: 1.1rem;
+            letter-spacing: 4px;
+            opacity: 0.8;
+            transition: opacity 2s ease-in-out;
+            text-shadow: 1px 1px 2px rgba(255,255,255,0.5);
+        }
+
+        /* 彩蛋箴言文字样式 */
+        #zen-text {
+            top: 48%;
+            transform: translate(-50%, -50%);
+            color: #333;
+            font-size: 1.8rem;
+            letter-spacing: 6px;
+            font-family: "STZhongsong", "SimSun", serif;
+            opacity: 0;
+            transition: opacity 2.5s ease-in-out, transform 3s ease-out;
+            text-shadow: 0px 0px 15px rgba(233,230,216, 0.9);
+            width: 100%;
+        }
+        
+        #zen-text.active {
+            opacity: 0.85;
+            transform: translate(-50%, -52%);
+        }
+
+        /* 模式二的箴言样式 */
+        #zen-text-2 {
+            top: 48%;
+            transform: translate(-50%, -50%);
+            color: #333;
+            font-size: 1.8rem;
+            letter-spacing: 6px;
+            font-family: "STZhongsong", "SimSun", serif;
+            opacity: 0;
+            transition: opacity 2.5s ease-in-out, transform 3s ease-out;
+            text-shadow: 0px 0px 15px rgba(233,230,216, 0.9);
+            width: 100%;
+        }
+        
+        #zen-text-2.active {
+            opacity: 0.85;
+            transform: translate(-50%, -52%);
+        }
+
+        /* 模式切换按钮样式 */
+        #mode-btn {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            padding: 8px 18px;
+            background: rgba(233, 230, 216, 0.6);
+            border: 1px solid #777;
+            color: #333;
+            font-size: 1rem;
+            font-family: "PingFang SC", "SimSun", sans-serif;
+            letter-spacing: 2px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.4s ease;
+            user-select: none;
+            z-index: 10;
+        }
+        #mode-btn:hover {
+            background: rgba(255, 255, 255, 0.9);
+            box-shadow: 0 0 15px rgba(0,0,0,0.15);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="hint-text" class="text-layer">点击反转，长按搅动进入无极</div>
+    <!-- 模式一彩蛋文字 -->
+    <div id="zen-text" class="text-layer">
+        世界既不黑也不白，而是一道精致的灰
+        <span style="display: block; font-size: 1.1rem; font-family: 'PingFang SC', sans-serif; letter-spacing: 2px; margin-top: 15px; opacity: 0.8;">
+            The world is neither black nor white, but a delicate shade of gray.
+        </span>
+    </div>
+    
+    <!-- 模式二彩蛋文字 -->
+    <div id="zen-text-2" class="text-layer">
+        尽人事，听天命
+        <span style="display: block; font-size: 1.1rem; font-family: 'PingFang SC', sans-serif; letter-spacing: 2px; margin-top: 15px; opacity: 0.8;">
+            Do your best, and leave the rest to fate.
+        </span>
+    </div>
+    
+    <button id="mode-btn">当前：太极图</button>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const hintText = document.getElementById('hint-text');
+        const zenText = document.getElementById('zen-text');
+        const zenText2 = document.getElementById('zen-text-2'); 
+        const modeBtn = document.getElementById('mode-btn');    
+
+        let width, height;
+        let particles = [];
+        const R = 220; 
+        let angle = 0; 
+
+        // 模式控制变量
+        let currentMode = 1;       // 1: 太极模式, 2: 阴阳分流模式
+        let modeLerp = 0;          // 模式形态切换插值 (0~1)
+        
+        // 黑白反转控制 (流水模式专用)
+        let targetColorSwap = 0;   // 目标颜色反转状态 (0: 正常, 1: 反转)
+        let colorSwapLerp = 0;     // 颜色平滑渐变系数
+
+        // 太极反转与墨龙模式变量
+        let angleOffset = 0;       
+        let targetAngleOffset = 0; 
+
+        let mouseEnergy = 0;       
+        let isDragonMode = false;  
+        let dragonLerp = 0;        
+        let dragonSpine = [];      
+        let lastMouse = {x: -1000, y: -1000};
+
+        // 研墨融合模式变量
+        let isDragging = false;    
+        let mixEnergy = 0;         
+        let mixLerp = 0;           
+        let isZenMode = false;     
+        let ignoreDrag = false;    
+
+        let mouse = {
+            x: -1000,
+            y: -1000,
+            radius: 120,    
+            isActive: false
+        };
+
+        setTimeout(() => {
+            if (hintText) hintText.style.opacity = '0';
+        }, 5000);
+
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        }
+
+        function getTaiChiColor(x, y) {
+            let d = Math.hypot(x, y);
+            if (d > R) return null; 
+
+            if (Math.hypot(x, y + R / 2) < R / 6) return 'black';
+            if (Math.hypot(x, y - R / 2) < R / 6) return 'white';
+            if (Math.hypot(x, y + R / 2) < R / 2) return 'white';
+            if (Math.hypot(x, y - R / 2) < R / 2) return 'black';
+
+            return x > 0 ? 'black' : 'white';
+        }
+
+        class Particle {
+            constructor(baseX, baseY, colorType) {
+                this.colorType = colorType; 
+                this.isLeft = (colorType === 'black'); // 默认黑色在左，白色在右
+
+                this.baseX = baseX + (Math.random() - 0.5) * 6;
+                this.baseY = baseY + (Math.random() - 0.5) * 6;
+                
+                this.x = width / 2 + (Math.random() - 0.5) * width;
+                this.y = height / 2 + (Math.random() - 0.5) * height;
+                
+                this.vx = 0;
+                this.vy = 0;
+                this.size = Math.random() * 2 + 0.6; 
+                
+                this.baseSpring = Math.random() * 0.015 + 0.01; 
+                this.friction = Math.random() * 0.05 + 0.86; 
+
+                // --- 模式二：垂直河流流场初始参数 ---
+                this.m2_vx = 0;
+                this.m2_vy = 0;
+                this.m2_speed = Math.random() * 2.5 + 1.5; 
+                this.m2_offsetX_ratio = Math.random(); // 新增：横向分布比例 (0~1)
+                
+                // 初始位置分布 (铺满全屏)
+                if (this.isLeft) {
+                    this.m2_x = (window.innerWidth / 2) * this.m2_offsetX_ratio;
+                } else {
+                    this.m2_x = window.innerWidth / 2 + (window.innerWidth / 2) * this.m2_offsetX_ratio;
+                }
+                this.m2_y = Math.random() * window.innerHeight;
+                // ------------------------------------
+
+                let dist = Math.hypot(baseX, baseY);
+                this.ratio = Math.min(dist / R, 1);
+
+                // 保存基础RGB色彩值
+                if (colorType === 'black') {
+                    let gray = Math.floor(Math.random() * 30 + 10);
+                    this.base_r = this.base_g = this.base_b = gray;
+                    this.a = Math.random() * 0.5 + 0.2;
+                } else {
+                    let white = Math.floor(Math.random() * 20 + 235);
+                    this.base_r = this.base_g = this.base_b = white;
+                    this.a = Math.random() * 0.5 + 0.25;
+                }
+            }
+
+            update(cx, cy, currentAngle) {
+                // 1. 计算模式一 (太极) 的目标坐标
+                let totalAngle = currentAngle + angleOffset;
+                let taiChiX = cx + this.baseX * Math.cos(totalAngle) - this.baseY * Math.sin(totalAngle);
+                let taiChiY = cy + this.baseX * Math.sin(totalAngle) + this.baseY * Math.cos(totalAngle);
+                
+                // 2. 计算模式二 (双流) 的运动轨迹 (基于手绘图流体动力学)
+                // 动态的波浪中轴线
+                let divideX = width / 2 + Math.sin(this.m2_y * 0.005 + currentAngle * 1.5) * (width * 0.12);
+                
+                if (this.isLeft) {
+                    // 左侧：往下流 (y增加)
+                    this.m2_vy = this.m2_speed;
+                    // 流场引力：根据比例铺满 0 到 divideX 之间的空间，留出15px中缝
+                    let targetX = (divideX - 15) * this.m2_offsetX_ratio;
+                    let targetVx = (targetX - this.m2_x) * 0.015;
+                    this.m2_vx += (targetVx - this.m2_vx) * 0.05; 
+                    
+                    // 触底后从左上角重新下落
+                    if (this.m2_y > height + 50) {
+                        this.m2_y = -50;
+                        this.m2_offsetX_ratio = Math.random(); // 重新随机分布比例
+                        this.m2_x = (width / 2) * this.m2_offsetX_ratio;
+                    }
+                } else {
+                    // 右侧：往上流 (y减小)
+                    this.m2_vy = -this.m2_speed;
+                    // 流场引力：根据比例铺满 divideX 到 width 之间的空间，留出15px中缝
+                    let targetX = (divideX + 15) + (width - divideX - 15) * this.m2_offsetX_ratio;
+                    let targetVx = (targetX - this.m2_x) * 0.015;
+                    this.m2_vx += (targetVx - this.m2_vx) * 0.05;
+                    
+                    // 触顶后从右下角重新升起
+                    if (this.m2_y < -50) {
+                        this.m2_y = height + 50;
+                        this.m2_offsetX_ratio = Math.random(); // 重新随机分布比例
+                        this.m2_x = width / 2 + (width / 2) * this.m2_offsetX_ratio;
+                    }
+                }
+
+                this.m2_x += this.m2_vx;
+                this.m2_y += this.m2_vy;
+
+                // 3. 模式融合与切换的平滑插值 (太极 <-> 双流)
+                let baseTargetX = taiChiX * (1 - modeLerp) + this.m2_x * modeLerp;
+                let baseTargetY = taiChiY * (1 - modeLerp) + this.m2_y * modeLerp;
+
+                let targetX = baseTargetX;
+                let targetY = baseTargetY;
+
+                // 墨龙形态 (兼容双模式)
+                if (dragonLerp > 0.01 && dragonSpine.length > 5) {
+                    let spineIdx = Math.floor(this.ratio * (dragonSpine.length - 1));
+                    let pt = dragonSpine[spineIdx];
+                    if (pt) {
+                        let scale = (1 - this.ratio) * 0.5 + 0.1; 
+                        let dragonX = pt.x + this.baseX * scale;
+                        let dragonY = pt.y + this.baseY * scale;
+                        
+                        targetX = baseTargetX * (1 - dragonLerp) + dragonX * dragonLerp;
+                        targetY = baseTargetY * (1 - dragonLerp) + dragonY * dragonLerp;
+                    }
+                }
+
+                // 研墨融合模式物理影响
+                let currentSpring = this.baseSpring * (1 - mixLerp * 0.85); 
+                
+                if (mixLerp > 0.01) {
+                    let dxCenter = this.x - cx;
+                    let dyCenter = this.y - cy;
+                    let distCenter = Math.hypot(dxCenter, dyCenter) || 1;
+                    
+                    this.vx += (-dyCenter / distCenter) * mixLerp * 1.5;
+                    this.vy += (dxCenter / distCenter) * mixLerp * 1.5;
+                    this.vx -= (dxCenter / distCenter) * mixLerp * 0.2;
+                    this.vy -= (dyCenter / distCenter) * mixLerp * 0.2;
+                }
+
+                // 弹簧力
+                let dx = targetX - this.x;
+                let dy = targetY - this.y;
+                this.vx += dx * currentSpring;
+                this.vy += dy * currentSpring;
+
+                // 鼠标排斥/搅动力
+                if (mouse.isActive) {
+                    let mdx = this.x - mouse.x;
+                    let mdy = this.y - mouse.y;
+                    let dist = Math.hypot(mdx, mdy);
+
+                    if (dist < mouse.radius) {
+                        let force = (mouse.radius - dist) / mouse.radius;
+                        let swirlX = -mdy / dist;
+                        let swirlY = mdx / dist;
+                        let pushX = mdx / dist;
+                        let pushY = mdy / dist;
+
+                        this.vx += (pushX * 1.8 + swirlX * 3.2) * force;
+                        this.vy += (pushY * 1.8 + swirlY * 3.2) * force;
+                    }
+                }
+
+                // 布朗运动与阻力
+                this.vx += (Math.random() - 0.5) * 0.2;
+                this.vy += (Math.random() - 0.5) * 0.2;
+
+                this.vx *= this.friction;
+                this.vy *= this.friction;
+                this.x += this.vx;
+                this.y += this.vy;
+            }
+
+            draw() {
+                // --- 颜色处理逻辑 ---
+                let tr = this.base_r;
+                let tg = this.base_g;
+                let tb = this.base_b;
+
+                // 处理模式二的平滑黑白互换
+                if (colorSwapLerp > 0) {
+                    // 黑转白，白转黑 (约等于255 - 基础色)
+                    let inv_r = 255 - this.base_r;
+                    let inv_g = 255 - this.base_g;
+                    let inv_b = 255 - this.base_b;
+
+                    tr = this.base_r * (1 - colorSwapLerp) + inv_r * colorSwapLerp;
+                    tg = this.base_g * (1 - colorSwapLerp) + inv_g * colorSwapLerp;
+                    tb = this.base_b * (1 - colorSwapLerp) + inv_b * colorSwapLerp;
+                }
+                
+                // 处理搅动时的无极灰融合
+                let grayVal = 135;
+                let final_r = Math.floor(tr * (1 - mixLerp) + grayVal * mixLerp);
+                let final_g = Math.floor(tg * (1 - mixLerp) + grayVal * mixLerp);
+                let final_b = Math.floor(tb * (1 - mixLerp) + grayVal * mixLerp);
+                
+                ctx.fillStyle = `rgba(${final_r}, ${final_g}, ${final_b}, ${this.a})`;
+
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function initParticles() {
+            particles = [];
+            const numParticles = 6500; 
+            let attempts = 0;
+
+            while (particles.length < numParticles && attempts < 50000) {
+                attempts++;
+                let x = (Math.random() * 2 - 1) * R;
+                let y = (Math.random() * 2 - 1) * R;
+                
+                let colorType = getTaiChiColor(x, y);
+                if (colorType !== null) {
+                    particles.push(new Particle(x, y, colorType));
+                }
+            }
+        }
+
+        function animate() {
+            // 背景颜色随搅动融合逐渐变灰
+            let bgR = Math.floor(233 * (1 - mixLerp) + 130 * mixLerp);
+            let bgG = Math.floor(230 * (1 - mixLerp) + 130 * mixLerp);
+            let bgB = Math.floor(216 * (1 - mixLerp) + 130 * mixLerp);
+            
+            document.body.style.backgroundColor = `rgb(${bgR}, ${bgG}, ${bgB})`;
+            ctx.fillStyle = `rgba(${bgR}, ${bgG}, ${bgB}, 0.2)`; 
+            ctx.fillRect(0, 0, width, height);
+
+            // 更新模式切换插值
+            let targetModeLerp = (currentMode === 1) ? 0 : 1;
+            modeLerp += (targetModeLerp - modeLerp) * 0.03;
+
+            // 更新颜色互换插值 (流水模式专属特效)
+            colorSwapLerp += (targetColorSwap - colorSwapLerp) * 0.04;
+
+            angleOffset += (targetAngleOffset - angleOffset) * 0.06; 
+            
+            // 状态与能量控制
+            mouseEnergy *= 0.94; 
+            if (mouseEnergy > 120 && !isDragging) isDragonMode = true;
+            if (mouseEnergy < 20 || isDragging) isDragonMode = false;
+
+            // 触发自动恢复的无极(灰)彩蛋模式
+            if (!isZenMode && mixEnergy > 480) {
+                isZenMode = true;
+                ignoreDrag = true; 
+                setTimeout(() => {
+                    isZenMode = false;
+                    mixEnergy = 0; 
+                }, 4000); 
+            }
+
+            if (isZenMode) {
+                mixEnergy = 500; 
+            } else if (!isDragging || ignoreDrag) {
+                mixEnergy *= 0.96; 
+            }
+            
+            // 达到350能量即进入完全融合的混沌状态
+            let targetMix = mixEnergy > 350 ? 1 : (mixEnergy / 350); 
+            targetMix = Math.min(1, targetMix);
+            mixLerp += (targetMix - mixLerp) * 0.02; 
+
+            // 根据当前模式控制不同彩蛋文字的显示
+            if (mixLerp > 0.8) {
+                if (currentMode === 1) {
+                    zenText.classList.add('active');
+                } else {
+                    zenText2.classList.add('active');
+                }
+            } else {
+                zenText.classList.remove('active');
+                zenText2.classList.remove('active');
+            }
+
+            dragonLerp += (isDragonMode ? 0.03 : -0.03);
+            dragonLerp = Math.max(0, Math.min(1, dragonLerp));
+
+            if (isDragonMode || dragonLerp > 0) {
+                dragonSpine.unshift({x: mouse.x, y: mouse.y});
+                if (dragonSpine.length > 45) dragonSpine.pop(); 
+            }
+
+            angle += 0.0035; 
+            const cx = width / 2;
+            const cy = height / 2;
+
+            for (let i = 0; i < particles.length; i++) {
+                particles[i].update(cx, cy, angle);
+                particles[i].draw();
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // 交互监听
+        window.addEventListener('mousemove', (e) => {
+            let dx = 0, dy = 0;
+            if(lastMouse.x !== -1000) {
+                dx = e.clientX - lastMouse.x;
+                dy = e.clientY - lastMouse.y;
+                let speed = Math.hypot(dx, dy);
+                
+                mouseEnergy += speed * 0.15;
+                if (mouseEnergy > 250) mouseEnergy = 250; 
+
+                if (isDragging && !ignoreDrag) {
+                    mixEnergy += speed * 0.5; 
+                    if (mixEnergy > 500) mixEnergy = 500;
+                }
+            }
+            lastMouse.x = e.clientX;
+            lastMouse.y = e.clientY;
+
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+            mouse.isActive = true;
+        });
+
+        // 模式切换按钮事件
+        modeBtn.addEventListener('click', (e) => {
+            currentMode = currentMode === 1 ? 2 : 1;
+            modeBtn.innerText = currentMode === 1 ? '当前：太极图' : '当前：阴阳流';
+            
+            mixEnergy = 0;
+            isZenMode = false;
+            ignoreDrag = false;
+        });
+
+        window.addEventListener('mousedown', (e) => {
+            if (e.target === modeBtn) return;
+
+            isDragging = true;
+            
+            // 不同模式执行不同的点击反转逻辑
+            if (currentMode === 1) {
+                targetAngleOffset += Math.PI; // 太极阴阳旋转
+            } else {
+                targetColorSwap = targetColorSwap === 0 ? 1 : 0; // 流水模式黑白平滑互换
+            }
+
+            // 炸开效果
+            for(let p of particles) {
+                let dx = p.x - e.clientX;
+                let dy = p.y - e.clientY;
+                let dist = Math.hypot(dx, dy);
+                if(dist < 200) {
+                    let force = (200 - dist) / 8;
+                    p.vx += (dx / dist) * force;
+                    p.vy += (dy / dist) * force;
+                }
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+            ignoreDrag = false; 
+        });
+
+        // 移动端支持长按搅动与点击
+        window.addEventListener('touchstart', (e) => {
+            if (e.target === modeBtn) return;
+
+            isDragging = true;
+            mouse.x = lastMouse.x = e.touches[0].clientX;
+            mouse.y = lastMouse.y = e.touches[0].clientY;
+            mouse.isActive = true;
+            
+            if (currentMode === 1) {
+                targetAngleOffset += Math.PI;
+            } else {
+                targetColorSwap = targetColorSwap === 0 ? 1 : 0;
+            }
+        }, {passive: true});
+
+        window.addEventListener('touchmove', (e) => {
+            let currX = e.touches[0].clientX;
+            let currY = e.touches[0].clientY;
+            
+            if (isDragging && !ignoreDrag) {
+                let speed = Math.hypot(currX - lastMouse.x, currY - lastMouse.y);
+                mixEnergy += speed * 0.5;
+                if (mixEnergy > 500) mixEnergy = 500;
+            }
+            
+            lastMouse.x = currX;
+            lastMouse.y = currY;
+            mouse.x = currX;
+            mouse.y = currY;
+        }, {passive: true});
+
+        window.addEventListener('touchend', () => {
+            isDragging = false;
+            mouse.isActive = false;
+            ignoreDrag = false; 
+        });
+
+        window.addEventListener('resize', () => {
+            resize();
+        });
+
+        resize();
+        initParticles();
+        animate();
+
+    </script>
+</body>
+</html>
