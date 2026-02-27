@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>水墨太极交互 - 网页版</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* 宣纸底色 */
+            background-color: #e9e6d8;
+            font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #hint-text {
+            position: absolute;
+            top: 85%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #555;
+            font-size: 1.1rem;
+            letter-spacing: 4px;
+            pointer-events: none;
+            opacity: 0.8;
+            transition: opacity 2s ease-in-out;
+            text-shadow: 1px 1px 2px rgba(255,255,255,0.5);
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="hint-text">点击反转阴阳，剧烈晃动唤醒墨龙</div>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        /**
+         * 水墨太极交互系统
+         * 逻辑：粒子系统 + 弹簧力 + 流体模拟 + 动态采样
+         */
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const hintText = document.getElementById('hint-text');
+
+        let width, height;
+        let particles = [];
+        const R = 220; // 太极图的基准半径
+        let angle = 0; // 太极图的旋转角度
+
+        // --- 新增：太极反转与墨龙模式变量 ---
+        let angleOffset = 0;       // 当前反转角度
+        let targetAngleOffset = 0; // 目标反转角度
+
+        let mouseEnergy = 0;       // 鼠标运动能量
+        let isDragonMode = false;  // 是否化龙
+        let dragonLerp = 0;        // 形态过渡平滑值 (0=太极, 1=龙)
+        let dragonSpine = [];      // 记录鼠标轨迹作为龙骨
+        let lastMouse = {x: -1000, y: -1000};
+        // ------------------------------------
+
+        // 鼠标/触摸位置及交互参数
+        let mouse = {
+            x: -1000,
+            y: -1000,
+            radius: 120,    // 交互影响半径
+            isActive: false
+        };
+
+        // 隐藏提示文字的定时器
+        setTimeout(() => {
+            if (hintText) hintText.style.opacity = '0';
+        }, 4000);
+
+        // 初始化画布大小
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        }
+
+        /**
+         * 判断坐标 (x,y) 属于太极的哪一部分，返回颜色或null
+         * 用于在初始化时根据形状生成粒子
+         */
+        function getTaiChiColor(x, y) {
+            let d = Math.hypot(x, y);
+            if (d > R) return null; // 在大圆外部
+
+            // 顶部小圆点 (黑点)
+            if (Math.hypot(x, y + R / 2) < R / 6) return 'black';
+            // 底部小圆点 (白点)
+            if (Math.hypot(x, y - R / 2) < R / 6) return 'white';
+            
+            // 顶部半圆 (白鱼的头部)
+            if (Math.hypot(x, y + R / 2) < R / 2) return 'white';
+            // 底部半圆 (黑鱼的头部)
+            if (Math.hypot(x, y - R / 2) < R / 2) return 'black';
+
+            // 左白右黑 (S曲线由上面的半圆覆盖形成)
+            return x > 0 ? 'black' : 'white';
+        }
+
+        // 粒子类定义
+        class Particle {
+            constructor(baseX, baseY, colorType) {
+                // 存储相对于太极中心的原始坐标，添加微小随机偏移增强水墨感
+                this.baseX = baseX + (Math.random() - 0.5) * 6;
+                this.baseY = baseY + (Math.random() - 0.5) * 6;
+                
+                // 初始位置设为随机散落，进场有聚合感
+                this.x = width / 2 + (Math.random() - 0.5) * width;
+                this.y = height / 2 + (Math.random() - 0.5) * height;
+                
+                this.vx = 0;
+                this.vy = 0;
+                this.size = Math.random() * 2 + 0.6; // 粒子大小
+                
+                // 物理特性参数
+                this.spring = Math.random() * 0.015 + 0.01; 
+                this.friction = Math.random() * 0.05 + 0.86; 
+
+                // --- 新增：为墨龙模式分配一个 0~1 的位置比例 ---
+                // 距离中心越近，越靠近龙头 (0)；越远越靠近龙尾 (1)
+                let dist = Math.hypot(baseX, baseY);
+                this.ratio = Math.min(dist / R, 1);
+                // ------------------------------------------------
+
+                // 初始化颜色：模拟墨色和留白
+                if (colorType === 'black') {
+                    let gray = Math.floor(Math.random() * 30 + 10);
+                    let alpha = Math.random() * 0.5 + 0.2;
+                    this.color = `rgba(${gray}, ${gray}, ${gray}, ${alpha})`;
+                } else {
+                    let white = Math.floor(Math.random() * 20 + 235);
+                    let alpha = Math.random() * 0.5 + 0.25;
+                    this.color = `rgba(${white}, ${white}, ${white}, ${alpha})`;
+                }
+            }
+
+            update(cx, cy, currentAngle) {
+                // --- 修改：计算太极形态目标点 (加入点击反转的角度偏移) ---
+                let totalAngle = currentAngle + angleOffset;
+                let taiChiX = cx + this.baseX * Math.cos(totalAngle) - this.baseY * Math.sin(totalAngle);
+                let taiChiY = cy + this.baseX * Math.sin(totalAngle) + this.baseY * Math.cos(totalAngle);
+                
+                let targetX = taiChiX;
+                let targetY = taiChiY;
+
+                // --- 新增：墨龙形态的目标点计算 ---
+                if (dragonLerp > 0.01 && dragonSpine.length > 5) {
+                    // 根据自己的 ratio 找到在龙骨(鼠标轨迹)上的对应点
+                    let spineIdx = Math.floor(this.ratio * (dragonSpine.length - 1));
+                    let pt = dragonSpine[spineIdx];
+                    if (pt) {
+                        // 龙首保留形态，龙尾收缩，形成流体飘带状
+                        let scale = (1 - this.ratio) * 0.5 + 0.1; 
+                        let dragonX = pt.x + this.baseX * scale;
+                        let dragonY = pt.y + this.baseY * scale;
+                        
+                        // 平滑插值：在太极和墨龙形态之间如水般过渡
+                        targetX = taiChiX * (1 - dragonLerp) + dragonX * dragonLerp;
+                        targetY = taiChiY * (1 - dragonLerp) + dragonY * dragonLerp;
+                    }
+                }
+                // ------------------------------------
+
+                // 1. 弹簧力：牵引粒子回到当前目标位置
+                let dx = targetX - this.x;
+                let dy = targetY - this.y;
+                this.vx += dx * this.spring;
+                this.vy += dy * this.spring;
+
+                // 2. 鼠标交互力：模拟流体旋转排斥
+                if (mouse.isActive) {
+                    let mdx = this.x - mouse.x;
+                    let mdy = this.y - mouse.y;
+                    let dist = Math.hypot(mdx, mdy);
+
+                    if (dist < mouse.radius) {
+                        let force = (mouse.radius - dist) / mouse.radius;
+                        // 切向力（旋转感）
+                        let swirlX = -mdy / dist;
+                        let swirlY = mdx / dist;
+                        // 径向力（排斥感）
+                        let pushX = mdx / dist;
+                        let pushY = mdy / dist;
+
+                        this.vx += (pushX * 1.8 + swirlX * 3.2) * force;
+                        this.vy += (pushY * 1.8 + swirlY * 3.2) * force;
+                    }
+                }
+
+                // 3. 扩散运动：模拟水墨在水中的自然漂浮
+                this.vx += (Math.random() - 0.5) * 0.2;
+                this.vy += (Math.random() - 0.5) * 0.2;
+
+                // 4. 速度与阻力计算
+                this.vx *= this.friction;
+                this.vy *= this.friction;
+                this.x += this.vx;
+                this.y += this.vy;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // 核心初始化
+        function initParticles() {
+            particles = [];
+            const numParticles = 6500; 
+            let attempts = 0;
+
+            // 采样生成太极粒子
+            while (particles.length < numParticles && attempts < 50000) {
+                attempts++;
+                let x = (Math.random() * 2 - 1) * R;
+                let y = (Math.random() * 2 - 1) * R;
+                
+                let colorType = getTaiChiColor(x, y);
+                if (colorType !== null) {
+                    particles.push(new Particle(x, y, colorType));
+                }
+            }
+        }
+
+        function animate() {
+            // 实现渐进式覆盖，形成水墨拖尾残影
+            ctx.fillStyle = 'rgba(233, 230, 216, 0.2)'; 
+            ctx.fillRect(0, 0, width, height);
+
+            // --- 新增：更新反转角度与墨龙形态过渡 ---
+            angleOffset += (targetAngleOffset - angleOffset) * 0.06; // 弹性缓冲
+            
+            mouseEnergy *= 0.94; // 能量衰减
+            if (mouseEnergy > 120) isDragonMode = true;
+            if (mouseEnergy < 20) isDragonMode = false;
+
+            dragonLerp += (isDragonMode ? 0.03 : -0.03);
+            dragonLerp = Math.max(0, Math.min(1, dragonLerp));
+
+            if (isDragonMode || dragonLerp > 0) {
+                dragonSpine.unshift({x: mouse.x, y: mouse.y});
+                if (dragonSpine.length > 45) dragonSpine.pop(); // 控制龙的长度
+            }
+            // ----------------------------------------
+
+            angle += 0.0035; // 自动旋转步长
+            const cx = width / 2;
+            const cy = height / 2;
+
+            for (let i = 0; i < particles.length; i++) {
+                particles[i].update(cx, cy, angle);
+                particles[i].draw();
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // 交互监听
+        window.addEventListener('mousemove', (e) => {
+            // --- 新增：计算鼠标移动能量 ---
+            if(lastMouse.x !== -1000) {
+                let dx = e.clientX - lastMouse.x;
+                let dy = e.clientY - lastMouse.y;
+                mouseEnergy += Math.hypot(dx, dy) * 0.15;
+                if (mouseEnergy > 250) mouseEnergy = 250; // 能量上限
+            }
+            lastMouse.x = e.clientX;
+            lastMouse.y = e.clientY;
+            // ------------------------------
+
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+            mouse.isActive = true;
+        });
+
+        window.addEventListener('mousedown', (e) => {
+            // --- 新增：点击触发太极阴阳反转 ---
+            targetAngleOffset += Math.PI; // 增加 180 度
+            // ----------------------------------
+
+            // 点击时产生强烈的墨滴炸开效果
+            for(let p of particles) {
+                let dx = p.x - e.clientX;
+                let dy = p.y - e.clientY;
+                let dist = Math.hypot(dx, dy);
+                if(dist < 200) {
+                    let force = (200 - dist) / 8;
+                    p.vx += (dx / dist) * force;
+                    p.vy += (dy / dist) * force;
+                }
+            }
+        });
+
+        window.addEventListener('touchstart', (e) => {
+            mouse.x = e.touches[0].clientX;
+            mouse.y = e.touches[0].clientY;
+            mouse.isActive = true;
+        }, {passive: true});
+
+        window.addEventListener('touchmove', (e) => {
+            mouse.x = e.touches[0].clientX;
+            mouse.y = e.touches[0].clientY;
+        }, {passive: true});
+
+        window.addEventListener('touchend', () => {
+            mouse.isActive = false;
+        });
+
+        window.addEventListener('resize', () => {
+            resize();
+        });
+
+        // 启动
+        resize();
+        initParticles();
+        animate();
+
+    </script>
+</body>
+</html>
